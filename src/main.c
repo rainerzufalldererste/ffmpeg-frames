@@ -1,5 +1,6 @@
 // see decode_video.c ffmpeg example.
 
+#pragma warning(push, 0)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,9 +11,12 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#include "slapcodec.h"
+#pragma warning(pop)
+
 #define INBUF_SIZE 4096
 
-static void decode(AVCodecContext *pCodecContext, AVFrame *pFrame, AVPacket *pPacket, const char *filename)
+static void decode(AVCodecContext *pCodecContext, AVFrame *pFrame, AVPacket *pPacket, const char *filename, slapFileWriter *pFileWriter)
 {
   char filenameBuffer[1024];
   int ret;
@@ -46,7 +50,12 @@ static void decode(AVCodecContext *pCodecContext, AVFrame *pFrame, AVPacket *pPa
     snprintf(filenameBuffer, sizeof(filenameBuffer), "%s-%d.jpg", filename, pCodecContext->frame_number);
 
     // do something with the yuv image.
-    // stbi_write_jpg(buf, frame->width, frame->height, 1, frame->data[0], 80);
+    // stbi_write_jpg(buf, pFrame->width, pFrame->height, 1, pFrame->data[0], 80);
+    if (slapFileWriter_AddFrameYUV420(pFileWriter, pFrame->data[0], pFrame->linesize[0]))
+    {
+      fprintf(stderr, "Failed to add frame to slap.\n");
+      exit(1);
+    }
   }
 }
 
@@ -83,7 +92,7 @@ int main(int argc, char **argv)
     exit(1);
   }
 
-  uint32_t streamIndex = -1;
+  int streamIndex = -1;
   AVCodecContext *pCodecContext = NULL;
   AVCodec *pCodec = NULL;
   AVCodecParameters *pCodecParams = NULL;
@@ -138,14 +147,25 @@ int main(int argc, char **argv)
     exit(1);
   }
 
+  slapFileWriter *pFileWriter = slapInitFileWriter(outfilename, pCodecParams->width, pCodecParams->height, 1);
+
+  if (!pFileWriter)
+  {
+    fprintf(stderr, "Could not create slap file writer.\n");
+    exit(1);
+  }
+
   while (av_read_frame(pFormatContext, pPacket) >= 0)
   {
-    if (pPacket->stream_index != streamIndex)
+    if (pPacket->stream_index != (int)streamIndex)
       continue;
 
     if (pPacket->size)
-      decode(pCodecContext, pFrame, pPacket, outfilename);
+      decode(pCodecContext, pFrame, pPacket, outfilename, pFileWriter);
   }
+
+  slapFinalizeFileWriter(pFileWriter);
+  slapDestroyFileWriter(&pFileWriter);
 
   return 0;
 }

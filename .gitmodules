@@ -1,0 +1,6 @@
+[submodule "slap/repo"]
+	path = slap/repo
+	url = https://github.com/rainerzufalldererste/slapcodec.git
+[submodule "premake"]
+	path = premake
+	url = https://github.com/rainerzufalldererste/premakeBuild.git
