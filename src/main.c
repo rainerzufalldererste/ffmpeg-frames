@@ -16,7 +16,17 @@
 
 #define INBUF_SIZE 4096
 
-static void decode(AVCodecContext *pCodecContext, AVFrame *pFrame, AVPacket *pPacket, const char *filename, slapFileWriter *pFileWriter)
+#ifdef _DEBUG
+#define EXIT_ERROR() __debugbreak()
+#define PRINT_ERROR(...) printf(__VA_ARGS__)
+#else
+#define EXIT_ERROR() exit(1)
+#define PRINT_ERROR(...) printf(__VA_ARGS__)
+#endif
+
+void *pFrameData = NULL;
+
+static void decode(AVCodecContext *pCodecContext, AVFrame *pFrame, AVPacket *pPacket, const char *filename, slapFileWriter *pFileWriter, const size_t sizeX, const size_t sizeY)
 {
   char filenameBuffer[1024];
   int ret;
@@ -25,8 +35,8 @@ static void decode(AVCodecContext *pCodecContext, AVFrame *pFrame, AVPacket *pPa
 
   if (ret < 0)
   {
-    fprintf(stderr, "Error sending a packet for decoding\n");
-    exit(1);
+    PRINT_ERROR("Error sending a packet for decoding\n");
+    EXIT_ERROR();
   }
 
   while (ret >= 0)
@@ -39,22 +49,26 @@ static void decode(AVCodecContext *pCodecContext, AVFrame *pFrame, AVPacket *pPa
     }
     else if (ret < 0)
     {
-      fprintf(stderr, "Error during decoding\n");
-      exit(1);
+      PRINT_ERROR("Error during decoding\n");
+      EXIT_ERROR();
     }
 
     printf("saving frame %3d\n", pCodecContext->frame_number);
     fflush(stdout);
 
-    // the picture is allocated by the decoder. no need to free it
-    snprintf(filenameBuffer, sizeof(filenameBuffer), "%s-%d.jpg", filename, pCodecContext->frame_number);
+    snprintf(filenameBuffer, sizeof(filenameBuffer), "%s-%d.slap", filename, pCodecContext->frame_number);
 
-    // do something with the yuv image.
-    // stbi_write_jpg(buf, pFrame->width, pFrame->height, 1, pFrame->data[0], 80);
-    if (slapFileWriter_AddFrameYUV420(pFileWriter, pFrame->data[0], pFrame->linesize[0]))
+    size_t sizeXY = sizeX * sizeY;
+    slapMemmove(pFrameData, pFrame->data[0], sizeXY);
+    slapMemmove((uint8_t *)pFrameData + sizeXY, pFrame->data[1], sizeXY >> 2);
+    slapMemmove((uint8_t *)pFrameData + (sizeXY + (sizeXY >> 2)), pFrame->data[2], sizeXY >> 2);
+
+    slapResult result = slapFileWriter_AddFrameYUV420(pFileWriter, pFrameData);
+    
+    if (result)
     {
-      fprintf(stderr, "Failed to add frame to slap.\n");
-      exit(1);
+      PRINT_ERROR("Failed to add frame to slap.\n");
+      EXIT_ERROR();
     }
   }
 }
@@ -65,7 +79,7 @@ int main(int argc, char **argv)
 
   if (argc <= 2)
   {
-    fprintf(stderr, "Usage: %s <input file> <output file>\n", argv[0]);
+    PRINT_ERROR("Usage: %s <input file> <output file>\n", argv[0]);
     exit(0);
   }
 
@@ -76,20 +90,20 @@ int main(int argc, char **argv)
 
   if (!pFormatContext)
   {
-    fprintf(stderr, "Could not create AVFormatContext.\n");
-    exit(1);
+    PRINT_ERROR("Could not create AVFormatContext.\n");
+    EXIT_ERROR();
   }
 
   if (avformat_open_input(&pFormatContext, filename, NULL, NULL))
   {
-    fprintf(stderr, "Could not open input.\n");
-    exit(1);
+    PRINT_ERROR("Could not open input.\n");
+    EXIT_ERROR();
   }
 
   if (avformat_find_stream_info(pFormatContext, NULL))
   {
-    fprintf(stderr, "Could not get stream info.\n");
-    exit(1);
+    PRINT_ERROR("Could not get stream info.\n");
+    EXIT_ERROR();
   }
 
   int streamIndex = -1;
@@ -112,20 +126,20 @@ int main(int argc, char **argv)
 
       if (!pCodecContext)
       {
-        fprintf(stderr, "Codec allocation failure.\n");
-        exit(1);
+        PRINT_ERROR("Codec allocation failure.\n");
+        EXIT_ERROR();
       }
 
       if (avcodec_parameters_to_context(pCodecContext, pCodecParams))
       {
-        fprintf(stderr, "Codec parameters couldn't be applied to codec context.\n");
-        exit(1);
+        PRINT_ERROR("Codec parameters couldn't be applied to codec context.\n");
+        EXIT_ERROR();
       }
 
       if (avcodec_open2(pCodecContext, pCodec, NULL))
       {
-        fprintf(stderr, "Codec couln't be opened.\n");
-        exit(1);
+        PRINT_ERROR("Codec couln't be opened.\n");
+        EXIT_ERROR();
       }
       
       break;
@@ -134,25 +148,27 @@ int main(int argc, char **argv)
 
   if (streamIndex < 0)
   {
-    fprintf(stderr, "No video stream could be found.\n");
-    exit(1);
+    PRINT_ERROR("No video stream could be found.\n");
+    EXIT_ERROR();
   }
+
+  slapFileWriter *pFileWriter = slapCreateFileWriter(outfilename, pCodecParams->width, pCodecParams->height, 1);
+
+  if (!pFileWriter)
+  {
+    PRINT_ERROR("Could not create slap file writer.\n");
+    EXIT_ERROR();
+  }
+
+  pFrameData = malloc(pCodecParams->width * pCodecParams->height * 3 / 2);
 
   AVPacket *pPacket = av_packet_alloc();
   AVFrame *pFrame = av_frame_alloc();
 
   if (!pPacket || !pFrame)
   {
-    fprintf(stderr, "Could not allocate Frame or Packet.\n");
-    exit(1);
-  }
-
-  slapFileWriter *pFileWriter = slapInitFileWriter(outfilename, pCodecParams->width, pCodecParams->height, 1);
-
-  if (!pFileWriter)
-  {
-    fprintf(stderr, "Could not create slap file writer.\n");
-    exit(1);
+    PRINT_ERROR("Could not allocate Frame or Packet.\n");
+    EXIT_ERROR();
   }
 
   while (av_read_frame(pFormatContext, pPacket) >= 0)
@@ -161,10 +177,17 @@ int main(int argc, char **argv)
       continue;
 
     if (pPacket->size)
-      decode(pCodecContext, pFrame, pPacket, outfilename, pFileWriter);
+      decode(pCodecContext, pFrame, pPacket, outfilename, pFileWriter, pCodecParams->width, pCodecParams->height);
   }
 
-  slapFinalizeFileWriter(pFileWriter);
+  slapResult result = slapFinalizeFileWriter(pFileWriter);
+
+  if (result != slapSuccess)
+  {
+    PRINT_ERROR("Failed to write slap file.\n");
+    EXIT_ERROR();
+  }
+
   slapDestroyFileWriter(&pFileWriter);
 
   return 0;
